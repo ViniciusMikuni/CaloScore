@@ -12,6 +12,8 @@ def split_data(data,nevts,frac=0.8):
     data = data.shuffle(nevts)
     train_data = data.take(int(frac*nevts)).repeat()
     test_data = data.skip(int(frac*nevts)).repeat()
+    # print(tf.data.experimental.cardinality(test_data).numpy(),"cardinality")
+    # input()
     return train_data,test_data
 
 line_style = {
@@ -19,6 +21,7 @@ line_style = {
     'CaloScore: VP':'-',
     'CaloScore: VE':'-',
     'CaloScore: subVP':'-',
+    'WGAN-GP':'-',
 
     'VP 50 steps':'v',
     'VE 50 steps':'v',
@@ -43,6 +46,7 @@ colors = {
     'CaloScore: VP':'#7570b3',
     'CaloScore: VE':'#d95f02',
     'CaloScore: subVP':'#1b9e77',
+    'WGAN-GP':'#e7298a',
 
     'VP 50 steps':'#e7298a',
     'VE 50 steps':'#e7298a',
@@ -66,6 +70,7 @@ name_translate={
     'VPSDE':'CaloScore: VP',
     'VESDE':'CaloScore: VE',
     'subVPSDE':'CaloScore: subVP',
+    'wgan':'WGAN-GP',
 
     '50_VPSDE':'VP 50 steps',
     '50_VESDE':'VE 50 steps',
@@ -122,8 +127,13 @@ def SetGrid(ratio=True):
     return fig,gs
 
 
+def GetEMD(ref,array):
+    from scipy.stats import wasserstein_distance
+    return wasserstein_distance(ref,array)
+    # mse = np.square(ref-array)/ref
+    # return np.sum(mse)
 
-def PlotRoutine(feed_dict,xlabel='',ylabel='',reference_name='Geant4'):
+def PlotRoutine(feed_dict,xlabel='',ylabel='',reference_name='Geant4',emd=True):
     assert reference_name in feed_dict.keys(), "ERROR: Don't know the reference distribution"
     
     fig,gs = SetGrid() 
@@ -132,10 +142,16 @@ def PlotRoutine(feed_dict,xlabel='',ylabel='',reference_name='Geant4'):
     ax1 = plt.subplot(gs[1],sharex=ax0)
 
     for ip,plot in enumerate(feed_dict.keys()):
-        if 'steps' in plot or 'r=' in plot:
-            ax0.plot(np.mean(feed_dict[plot],0),label=plot,marker=line_style[plot],color=colors[plot],lw=0)
+        if emd==False or reference_name==plot:
+            plot_label = plot
         else:
-            ax0.plot(np.mean(feed_dict[plot],0),label=plot,linestyle=line_style[plot],color=colors[plot])
+            emdval = GetEMD(np.mean(feed_dict[reference_name],0),np.mean(feed_dict[plot],0))
+            plot_label = r"{}, EMD :{:.2f}".format(plot,emdval)
+            
+        if 'steps' in plot or 'r=' in plot:
+            ax0.plot(np.mean(feed_dict[plot],0),label=plot_label,marker=line_style[plot],color=colors[plot],lw=0)
+        else:
+            ax0.plot(np.mean(feed_dict[plot],0),label=plot_label,linestyle=line_style[plot],color=colors[plot])
         if reference_name!=plot:
             ratio = 100*np.divide(np.mean(feed_dict[reference_name],0)-np.mean(feed_dict[plot],0),np.mean(feed_dict[reference_name],0))
             #ax1.plot(ratio,color=colors[plot],marker='o',ms=10,lw=0,markerfacecolor='none',markeredgewidth=3)
@@ -146,7 +162,7 @@ def PlotRoutine(feed_dict,xlabel='',ylabel='',reference_name='Geant4'):
                 
         
     FormatFig(xlabel = "", ylabel = ylabel,ax0=ax0)
-    ax0.legend(loc='best',fontsize=16,ncol=1)
+    ax0.legend(loc='best',fontsize=13,ncol=1)
 
     plt.ylabel('Difference. (%)')
     plt.xlabel(xlabel)
@@ -186,7 +202,7 @@ def WriteText(xpos,ypos,text,ax0):
              transform = ax0.transAxes, fontsize=25, fontweight='bold')
 
 
-def HistRoutine(feed_dict,xlabel='',ylabel='',reference_name='Geant4',logy=False,binning=None,label_loc='best'):
+def HistRoutine(feed_dict,xlabel='',ylabel='',reference_name='Geant4',logy=False,binning=None,label_loc='best',emd=True):
     assert reference_name in feed_dict.keys(), "ERROR: Don't know the reference distribution"
     
     fig,gs = SetGrid() 
@@ -207,7 +223,14 @@ def HistRoutine(feed_dict,xlabel='',ylabel='',reference_name='Geant4',logy=False
             ax0.plot(xaxis,dist,color=colors[plot],marker=line_style[plot],ms=10,lw=0,markeredgewidth=3,label=plot)
             #dist,_,_=ax0.hist(feed_dict[plot],bins=binning,label=plot,marker=line_style[plot],color=colors[plot],density=True,histtype="step")
         else:
-            dist,_,_=ax0.hist(feed_dict[plot],bins=binning,label=plot,linestyle=line_style[plot],color=colors[plot],density=True,histtype="step")
+            dist,_ = np.histogram(feed_dict[plot],bins=binning,density=True)
+            if emd==False or reference_name==plot:
+                plot_label = plot
+            else:
+                emdval = GetEMD(feed_dict[reference_name],feed_dict[plot])
+                plot_label = r"{}, EMD :{:.2f}".format(plot,emdval)
+                
+            dist,_,_=ax0.hist(feed_dict[plot],bins=binning,label=plot_label,linestyle=line_style[plot],color=colors[plot],density=True,histtype="step")
             
         if reference_name!=plot:
             ratio = 100*np.divide(reference_hist-dist,reference_hist)
@@ -216,7 +239,7 @@ def HistRoutine(feed_dict,xlabel='',ylabel='',reference_name='Geant4',logy=False
             else:
                 ax1.plot(xaxis,ratio,color=colors[plot],marker='o',ms=10,lw=0,markerfacecolor='none',markeredgewidth=3)
         
-    ax0.legend(loc=label_loc,fontsize=16,ncol=1)        
+    ax0.legend(loc=label_loc,fontsize=13,ncol=1)        
     FormatFig(xlabel = "", ylabel = ylabel,ax0=ax0) 
 
     if logy:
@@ -337,31 +360,47 @@ def polar_to_cart(polar_data,nr=9,nalpha=16,nx=12,ny=12):
 if __name__ == "__main__":
     #Preprocessing of the input files: conversion to cartesian coordinates + zero-padded mask generation
     hvd.init()    
-    file_path = '/pscratch/sd/v/vmikuni/FCC/dataset_3_2.hdf5'
+    # file_path = '/pscratch/sd/v/vmikuni/FCC/dataset_3_2.hdf5'
+    file_path = '/global/cfs/cdirs/m3929/SCRATCH/FCC/dataset_2_2.hdf5'
+    file_out = '/global/cfs/cdirs/m3929/SCRATCH/FCC/dataset_2_2_small_v2.hdf5'
     with h5.File(file_path,"r") as h5f:
-        e = h5f['incident_energies'][:]
-        showers = h5f['showers'][:]
-    shape = [-1,45,50,18,1]
-    # shape = [-1,45,16,9,1]
-    nx=32
-    ny=32
+        e = h5f['incident_energies'][:100]
+        showers = h5f['showers'][:100]
+
+    print(showers.shape)
+    # shape = [-1,45,50,18,1]
+    # nx=32
+    # ny=32
+    shape = [-1,45,16,9,1]
+    nx=8
+    ny=8
+    nz = 9
+
+
+    
     showers = showers.reshape((-1,shape[2],shape[3]))
+
     cart_data = []
     for ish,shower in enumerate(showers):
         if ish%(45*10000)==0:print(ish//45)
         cart_data.append(polar_to_cart(shower,nr=shape[3],nalpha=shape[2],nx=nx,ny=ny))
 
-    cart_data = np.reshape(cart_data,(-1,45,nx,ny))
-    with h5.File('/pscratch/sd/v/vmikuni/FCC/dataset_3_2_cart.hdf5',"w") as h5f:
+    cart_data = np.reshape(cart_data,(-1,nz,45//nz,nx,ny))
+    # print(cart_data.shape)
+    cart_data = np.sum(cart_data,2)
+    #print(cart_data.shape)
+    print(np.sum(np.reshape(cart_data,(-1,nz*nx*ny)),-1,keepdims=True)/np.expand_dims(e,-1))
+    print(np.sum(cart_data>0)/np.sum(cart_data==0))
+    input()
+    with h5.File(file_out,"w") as h5f:
         dset = h5f.create_dataset("showers", data=cart_data)
         dset = h5f.create_dataset("incident_energies", data=e)
 
 
-    file_path='/pscratch/sd/v/vmikuni/FCC/dataset_1_photons_1.hdf5'
-    with h5.File(file_path,"r") as h5f:
-        energies = h5f['incident_energies'][:]
-    mask = np.sum(showers,0)==0
-    mask_file = file_path.replace('.hdf5','_mask.hdf5')
-    with h5.File(mask_file,"w") as h5f:
-        dset = h5f.create_dataset("mask", data=mask)
+    # with h5.File(file_path,"r") as h5f:
+    #     energies = h5f['incident_energies'][:]
+    # mask = np.sum(showers,0)==0
+    # mask_file = file_path.replace('.hdf5','_mask.hdf5')
+    # with h5.File(mask_file,"w") as h5f:
+    #     dset = h5f.create_dataset("mask", data=mask)
     

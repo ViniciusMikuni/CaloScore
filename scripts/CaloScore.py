@@ -5,6 +5,7 @@ from tensorflow.keras import layers, Input
 import time
 import tensorflow.keras.backend as K
 import horovod.tensorflow.keras as hvd
+import horovod.tensorflow as hvdtf
 import utils
 
 
@@ -21,7 +22,7 @@ class CaloScore(keras.Model):
         self.sde_type=sde_type
         self.config = config
         self._num_embed = self.config['EMBED']
-        self.num_heads=1
+
 
         if config is None:
             raise ValueError("Config file not given")
@@ -62,10 +63,11 @@ class CaloScore(keras.Model):
 
         if len(self._data_shape) == 2:
             self.shape = (-1,1,1)
-            inputs,outputs = self.ConvModel(time_embed)
+
         else:
             self.shape = (-1,1,1,1,1)
-            inputs,outputs = self.ConvModel(time_embed)
+            
+        inputs,outputs = self.ConvModel(time_embed)
         outputs = outputs/self.marginal_prob(inputs,inputs_time)[1]
 
         
@@ -289,10 +291,11 @@ class CaloScore(keras.Model):
             losses = tf.reduce_mean(tf.reshape(losses,(losses.shape[0], -1)), axis=-1)
 
             loss = tf.reduce_mean(losses)
-
+            
+        tape = hvdtf.DistributedGradientTape(tape)
         g = tape.gradient(loss, self.trainable_variables)
-        g = [tf.clip_by_norm(grad, 1)
-             for grad in g]
+        # g = [tf.clip_by_norm(grad, 1)
+        #      for grad in g]
 
         self.optimizer.apply_gradients(zip(g, self.trainable_variables))        
         self.loss_tracker.update_state(loss)
@@ -356,7 +359,7 @@ class CaloScore(keras.Model):
         time_steps = np.linspace(1., eps, num_steps)
         step_size = time_steps[0] - time_steps[1]        
         x = init_x
-
+        #return init_x
         if self.sde_type == 'VESDE':
              discrete_sigmas = np.exp(np.linspace(np.log(self.sigma_0), np.log(self.sigma_1), num_steps))
         else:
@@ -405,3 +408,5 @@ class CaloScore(keras.Model):
         print("Time for sampling {} events is {} seconds".format(batch_size,end - start))
         # The last step does not include any noise
         return x_mean
+
+        

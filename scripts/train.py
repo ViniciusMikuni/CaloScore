@@ -2,13 +2,13 @@ import numpy as np
 import os
 import tensorflow as tf
 from tensorflow import keras
-from tensorflow.keras.callbacks import ReduceLROnPlateau,EarlyStopping
+from tensorflow.keras.callbacks import ReduceLROnPlateau,EarlyStopping,ModelCheckpoint
 import horovod.tensorflow.keras as hvd
 import argparse
 import h5py as h5
 import utils
 from CaloScore import CaloScore
-
+from WGAN import WGAN
 
 if __name__ == '__main__':
     hvd.init()
@@ -55,6 +55,7 @@ if __name__ == '__main__':
     dataset =tf.data.Dataset.zip((tf_data, tf_energies))    
     train_data, test_data = utils.split_data(dataset,data_size,flags.frac)
     del dataset, data, tf_data,tf_energies
+
     
     BATCH_SIZE = dataset_config['BATCH']
     LR = float(dataset_config['LR'])
@@ -64,26 +65,59 @@ if __name__ == '__main__':
     callbacks = [
         hvd.callbacks.BroadcastGlobalVariablesCallback(0),
         hvd.callbacks.MetricAverageCallback(),            
-        ReduceLROnPlateau(patience=100, factor=0.5,
-                          min_lr=1e-8,verbose=hvd.rank()==0),
-        EarlyStopping(patience=EARLY_STOP,restore_best_weights=True),
+        # ReduceLROnPlateau(patience=100, factor=0.5,
+        #                   min_lr=1e-8,verbose=hvd.rank()==0),
+        # EarlyStopping(patience=EARLY_STOP,restore_best_weights=True),
         # hvd.callbacks.LearningRateWarmupCallback(
         #     initial_lr=LR*hvd.size(), warmup_epochs=5,
         #     verbose=hvd.rank()==0)
     ]
 
-    model = CaloScore(dataset_config['SHAPE_PAD'][1:],energies.shape[1],BATCH_SIZE,sde_type=flags.model,config=dataset_config)
+    if flags.model == 'wgan':
+        num_noise=dataset_config['NOISE_DIM']
+        model = WGAN(dataset_config['SHAPE_PAD'][1:],energies.shape[1],config=dataset_config,num_noise=num_noise)
+        opt_gen = tf.optimizers.RMSprop(learning_rate=LR)
+        opt_dis = tf.optimizers.RMSprop(learning_rate=LR)
+
+
+
+        opt_gen = hvd.DistributedOptimizer(
+            opt_gen, backward_passes_per_step=1,
+            average_aggregated_gradients=True)
+
+        opt_dis = hvd.DistributedOptimizer(
+            opt_dis, backward_passes_per_step=1,
+            average_aggregated_gradients=True)
+        
+        model.compile(
+            d_optimizer=opt_dis,
+            g_optimizer=opt_gen,        
+        )
+
+    else:
+        model = CaloScore(dataset_config['SHAPE_PAD'][1:],energies.shape[1],BATCH_SIZE,sde_type=flags.model,config=dataset_config)
+
+        opt =  keras.optimizers.Adam(learning_rate=LR)
+        opt = hvd.DistributedOptimizer(
+            opt, average_aggregated_gradients=True)
+
+        model.compile(optimizer=opt,experimental_run_tf_function=False)
+        
     if flags.load:
         checkpoint_folder = '../checkpoints_{}_{}'.format(dataset_config['CHECKPOINT_NAME'],flags.model)
         model.load_weights('{}/{}'.format(checkpoint_folder,'checkpoint')).expect_partial()
 
-    opt = keras.optimizers.Adam(learning_rate=LR)
-    opt = hvd.DistributedOptimizer(
-        opt, average_aggregated_gradients=True)
+    if hvd.rank()==0:
+        checkpoint_folder = '../checkpoints_{}_{}'.format(dataset_config['CHECKPOINT_NAME'],flags.model)
+        checkpoint = ModelCheckpoint('{}/checkpoint'.format(checkpoint_folder),
+                                     save_best_only=False,mode='auto',
+                                     period=1,save_weights_only=True)
+        callbacks.append(checkpoint)
+        # model(np.zeros((1,dataset_config['SHAPE'][0])),np.zeros((1,1)))
+        # print(model.summary())
 
-    model.compile(optimizer=opt,experimental_run_tf_function=False)
+    print(int(data_size*(1-flags.frac)/BATCH_SIZE))
 
-    
     history = model.fit(
         train_data.batch(BATCH_SIZE),
         epochs=NUM_EPOCHS,
@@ -101,4 +135,4 @@ if __name__ == '__main__':
             os.makedirs(checkpoint_folder)
         os.system('cp CaloScore.py {}'.format(checkpoint_folder)) # bkp of model def
         os.system('cp {} {}'.format(flags.config,checkpoint_folder)) # bkp of config file
-        model.save_weights('{}/{}'.format(checkpoint_folder,'checkpoint'),save_format='tf')
+        # model.save_weights('{}/{}'.format(checkpoint_folder,'checkpoint'),save_format='tf')

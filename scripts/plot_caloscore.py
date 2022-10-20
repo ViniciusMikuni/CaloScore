@@ -9,7 +9,8 @@ import utils
 import tensorflow as tf
 import horovod.tensorflow.keras as hvd
 from CaloScore import CaloScore
-
+from WGAN import WGAN
+import time
 
 hvd.init()
 
@@ -29,12 +30,12 @@ utils.SetStyle()
 parser = argparse.ArgumentParser()
 
 parser.add_argument('--data_folder', default='/pscratch/sd/v/vmikuni/FCC', help='Folder containing data and MC files')
+#parser.add_argument('--data_folder', default='/global/cfs/cdirs/m3929/SCRATCH/FCC/', help='Folder containing data and MC files')
 parser.add_argument('--plot_folder', default='../plots', help='Folder to save results')
 parser.add_argument('--config', default='config_dataset2.json', help='Training parameters')
 parser.add_argument('--nevts', type=float,default=1e5, help='Number of events to load')
 parser.add_argument('--nslices', type=int,default=16, help='Number of files generated')
 parser.add_argument('--nrank', type=int,default=0, help='Rank of the files generated')
-parser.add_argument('--batch_size', type=int,default=50, help='Batch size for generation')
 parser.add_argument('--model', default='VPSDE', help='Diffusion model to load. Options are: VPSDE, VESDE,  subVPSDE, all')
 parser.add_argument('--sample', action='store_true', default=False,help='Sample from learned model')
 parser.add_argument('--comp_eps', action='store_true', default=False,help='Load files with different eps')
@@ -62,14 +63,24 @@ if flags.sample:
 
     energies = np.reshape(energies,(-1,1))
     #print(energies)
-    model = CaloScore(dataset_config['SHAPE_PAD'][1:],energies.shape[1],nevts,sde_type=flags.model,config=dataset_config)    
-    model.load_weights('{}/{}'.format(checkpoint_folder,'checkpoint')).expect_partial()
-    batch_size = flags.batch_size
 
-
-    generated=model.PCSampler(cond=energies,
+    if flags.model == 'wgan':
+        num_noise=dataset_config['NOISE_DIM']
+        model = WGAN(dataset_config['SHAPE_PAD'][1:],energies.shape[1],config=dataset_config,num_noise=num_noise)
+        model.load_weights('{}/{}'.format(checkpoint_folder,'checkpoint')).expect_partial()
+        start = time.time()
+        generated = model.generate(energies.shape[0],energies)
+        end = time.time()
+        print(end - start)
+        
+    else:
+        model = CaloScore(dataset_config['SHAPE_PAD'][1:],energies.shape[1],nevts,sde_type=flags.model,config=dataset_config)    
+        model.load_weights('{}/{}'.format(checkpoint_folder,'checkpoint')).expect_partial()
+        generated=model.PCSampler(cond=energies,
                               snr=dataset_config['SNR'],
                               num_steps=dataset_config['NSTEPS']).numpy()
+
+        
     generated,energies = utils.ReverseNorm(generated,energies[:nevts],
                                            shape=dataset_config['SHAPE'],
                                            logE=dataset_config['logE'],
@@ -108,7 +119,7 @@ else:
             variations = ['50','500']
             models += ["{}_{}".format(variation,flags.model) for variation in variations]
     else:
-        models = ['VPSDE','subVPSDE','VESDE']
+        models = ['VPSDE','subVPSDE','VESDE','wgan']
 
     energies = []
     data_dict = {}
@@ -131,7 +142,8 @@ else:
     
     data_dict['Geant4']=np.reshape(data,dataset_config['SHAPE'])
     true_energies = np.reshape(true_energies,(-1,1))
-
+    # print(true_energies.shape[0])
+    # input()
 
     
     #Plot high level distributions and compare with real values
@@ -156,10 +168,14 @@ else:
             return fig, ax0
 
         fig,ax = SetFig("Gen. energy [GeV]","Dep. energy [GeV]")
+        
         for key in data_dict:
-            ax.scatter(true_energies[10000:10500],
-                       np.sum(data_dict[key].reshape(data_dict[key].shape[0],-1),-1)[10000:10500],
-                       label=key)
+
+            print(np.sum(data_dict[key].reshape(data_dict[key].shape[0],-1),-1).shape,true_energies.flatten().shape)
+            ax.scatter(
+                true_energies.flatten()[:500],
+                np.sum(data_dict[key].reshape(data_dict[key].shape[0],-1),-1)[:500],
+                label=key)
 
         ax.set_yscale("log")
         ax.set_xscale("log")
@@ -374,7 +390,7 @@ else:
                     vmax = np.nanmax(average[:,:,0])
                     vmin = np.nanmin(average[:,:,0])
                     print(vmin,vmax)
-                im = ax.pcolormesh(range(average.shape[0]), range(average.shape[1]), average[:,:,0], cmap=cmap,vmin=vmin,vmax=vmax)
+                im = ax.pcolormesh(range(average.shape[0]), range(average.shape[1]), average[:,:,0], cmap=cmap)
 
                 yScalarFormatter = utils.ScalarFormatterClass(useMathText=True)
                 yScalarFormatter.set_powerlimits((0,0))
@@ -390,13 +406,14 @@ else:
 
     high_level = []
     plot_routines = {
-        # 'Energy per layer':AverageELayer,
-        # 'Energy':HistEtot,
-        # '2D Energy scatter split':ScatterESplit,
-        # 'Nhits':HistNhits,
+        'Energy per layer':AverageELayer,
+        'Energy':HistEtot,
+        '2D Energy scatter split':ScatterESplit,
+        'Nhits':HistNhits,
     }
     
     if '1' in flags.config:
+        pass
         plot_routines['Max voxel']=HistMaxE
     else:
         pass
@@ -411,7 +428,7 @@ else:
         if '2D' in plot and flags.model == 'all':continue #skip scatter plots superimposed
         print(plot)
         if 'split' in plot:
-            plot_routines[plot](data_dict,energies)
+            plot_routines[plot](data_dict,true_energies)
         else:
             high_level.append(plot_routines[plot](data_dict))
             
