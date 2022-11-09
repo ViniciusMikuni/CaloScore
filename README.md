@@ -2,6 +2,9 @@
 
 In this repository, the implementation of the studies presented in the paper: [Score-based Generative Models for Calorimeter Shower Simulation](https://arxiv.org/abs/2206.11898).
 
+[![DOI](https://zenodo.org/badge/501829084.svg)](https://zenodo.org/badge/latestdoi/501829084)
+
+
 ![The score-based generative model is trained using a diffusion process that slowly perturbs the data. Generation of new samples is carried out by reversing the diffusion process using the learned score-function, or the gradient of the data density. For different time-steps, we show the distribution of deposited energies versus generated particle energies (top) and the energy deposition in a single layer of a calorimeter (bottom), generated with our proposed CaloScore model.](./assets/caloscore_scheme.png)
 
 [Tensorflow 2.6.0](https://www.tensorflow.org/) was used to implement all models, based on the score-model implementation from [Score-Based Generative Modeling through Stochastic Differential Equations](https://github.com/yang-song/score_sde)
